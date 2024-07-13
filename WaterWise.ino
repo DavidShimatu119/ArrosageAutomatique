@@ -1,191 +1,230 @@
+//inclure les bibliotheques utiles
+#include <Wire.h>
+
+#include <LiquidCrystal_I2C.h>
+
 #include <DHT.h>
 #include <DHT_U.h>
 
-//bibliotheques
 
-#include <SoftwareSerial.h>
-
-SoftwareSerial Bluetooth(10, 11);
-
-//pins
-const int HUMIDITE_MIN= 0;
+// Pins pour les composants
+const int HUMIDITE_MIN = 0;
 const int HUMIDITE_MAX = 1023;
 const int PIN_HUMIDITE = A0;
-const int LED_HUMIDITE_BASSE = 2;
-const int LED_HUMIDITE_HAUTE = 3;
 const int POMPE = 4;
 
 #define DHTPIN 5
 #define DHTTYPE DHT11
 
 DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+// Modes de culture
 enum CultureMode { HARICOTS, MAIS, TOMATES };
 CultureMode mode = HARICOTS;
 
-void displayOptions() {
-  Serial.println("Sélectionner le mode de culture :");
-  Serial.println("1: Haricots");
-  Serial.println("2: Mais");
-  Serial.println("3: Tomates");
-  Serial.println("4: Réinitialiser l'interface de choix");
-  Bluetooth.println("1 : Haricots");
-  Bluetooth.println("2 : Mais");
-  Bluetooth.println("3 : Tomates"); 
-  Bluetooth.println("4 : Réinitialiser l'interface de choix"); 
-  Bluetooth.println("Sélectionner le mode de culture :");
-}
-void handleSelection(char selection){
-  switch (selection){
-      case '1' :
-      mode = HARICOTS;
-      Serial.println("MODE HARICOTS SELECTIONNE.");
-      
-      Bluetooth.println("MODE HARICOTS SELECTIONNE.");
-      break;
-      case '2' :
-      mode = MAIS;
-      Serial.println("MODE MAIS SELECIONNE");
-      Bluetooth.println("MODE MAIS SELECIONNE");
-      break;
-      case '3' :
-      mode = TOMATES;
-      Serial.println("MODE TOMATES SELECTIONNE");
-      Bluetooth.println("MODE TOMATES SELECTIONNE");
-      break;
-      case '4' :
-  
-      Serial.println("Réinitialisation de l'interface de choix ");
-      
-      Bluetooth.println("Réinitialisation de l'interface de choix ");
-      displayOptions();
-      break;
-      default:
-        Serial.println("Seletion invalide.");
-        Bluetooth.println("Seletion invalide.");
-      break;
-    }
-}
+// Boutons pour changer de mode et réinitialiser
+const int BUTTON_HARICOTS = 6;
+const int BUTTON_MAIS = 7;
+const int BUTTON_TOMATES = 8;
+const int BUTTON_RESET = 9;
+
+// Debounce pour les boutons
+unsigned long lastDebounceTimeHaricots = 0;
+unsigned long lastDebounceTimeMais = 0;
+unsigned long lastDebounceTimeTomates = 0;
+unsigned long lastDebounceTimeReset = 0;
+const unsigned long debounceDelay = 50;
+
+// Seuils d'humidité du sol pour chaque culture
+const int HUMIDITE_BASSE_HARICOTS = 30;
+const int HUMIDITE_HAUTE_HARICOTS = 70;
+const int HUMIDITE_BASSE_MAIS = 20;
+const int HUMIDITE_HAUTE_MAIS = 60;
+const int HUMIDITE_BASSE_TOMATES = 40;
+const int HUMIDITE_HAUTE_TOMATES = 80;
+
+// Seuils de température et d'humidité de l'air pour chaque culture
+const int TEMP_BASSE_HARICOTS = 18;
+const int TEMP_HAUTE_HARICOTS = 25;
+const int HUMID_AIR_BASSE_HARICOTS = 40;
+const int HUMID_AIR_HAUTE_HARICOTS = 60;
+
+const int TEMP_BASSE_MAIS = 20;
+const int TEMP_HAUTE_MAIS = 30;
+const int HUMID_AIR_BASSE_MAIS = 50;
+const int HUMID_AIR_HAUTE_MAIS = 70;
+
+const int TEMP_BASSE_TOMATES = 22;
+const int TEMP_HAUTE_TOMATES = 28;
+const int HUMID_AIR_BASSE_TOMATES = 60;
+const int HUMID_AIR_HAUTE_TOMATES = 80;
+
 void setup() {
-//moniteur serie 
-Serial.begin(9600);
-dht.begin();
-//
-pinMode(LED_HUMIDITE_BASSE,OUTPUT);
-pinMode(LED_HUMIDITE_HAUTE,OUTPUT);
-pinMode(POMPE, OUTPUT);
-delay(3000);
-displayOptions();
-pinMode(11, OUTPUT);
-pinMode(10, INPUT);
+  Serial.begin(9600);
+  dht.begin();
+  lcd.begin(16, 2);
+  lcd.backlight();
 
+  pinMode(POMPE, OUTPUT);
+  pinMode(BUTTON_HARICOTS, INPUT_PULLUP);
+  pinMode(BUTTON_MAIS, INPUT_PULLUP);
+  pinMode(BUTTON_TOMATES, INPUT_PULLUP);
+  pinMode(BUTTON_RESET, INPUT_PULLUP);
 
+  displayOptions();
 }
 
 void loop() {
-  if (Serial.available()){
-    char selection = Serial.read();
-    handleSelection(selection);
-  }
-  if (Bluetooth.available()){
-    char selection = Bluetooth.read();
-    handleSelection(selection);
-  }
-  
+  debounceButton(BUTTON_HARICOTS, HARICOTS, lastDebounceTimeHaricots);
+  debounceButton(BUTTON_MAIS, MAIS, lastDebounceTimeMais);
+  debounceButton(BUTTON_TOMATES, TOMATES, lastDebounceTimeTomates);
+  debounceResetButton(BUTTON_RESET, lastDebounceTimeReset);
+
   int soilMoistureValue = analogRead(PIN_HUMIDITE);
   int soilMoisturePercent = map(soilMoistureValue, HUMIDITE_MIN, HUMIDITE_MAX, 0, 100);
-  Serial.print("l'humidité du sol est :");
-  Serial.print(soilMoisturePercent);
-  Serial.println("%");
-  Bluetooth.print("Humidité du sol :");
-  Bluetooth.print(soilMoisturePercent);
-  Bluetooth.print("%");
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-  if (isnan(t) || isnan(t)) {
-    Serial.println("Erreur de lecture du capteur DHT!");
-    Bluetooth.print("Erreur de lecture du capteur DHT!");
-    return;
+  
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("Erreur de lecture du capteur DHT.");
+    lcd.setCursor(0, 1);
+    lcd.print("Erreur DHT");
+  } else {
+    Serial.print("Température: ");
+    Serial.print(temperature);
+    Serial.print(" °C, Humidité: ");
+    Serial.print(humidity);
+    Serial.println(" %");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Temp: ");
+    lcd.print(temperature);
+    lcd.print("C Hum: ");
+    lcd.print(humidity);
+    lcd.print("%");
+
+    checkAmbientConditions(temperature, humidity);
   }
-   Serial.print("Humidite de l'air :");
-   Serial.print(h);
-   Serial.println(" %");
-   Bluetooth.print("Humidité de l'air :");
-   Bluetooth.print(h);
-   Bluetooth.print(" %");
-   Serial.print("Temperature :");
-   Serial.print(t);
-   Serial.println(" *C");
-   Bluetooth.print("Temperature :");
-   Bluetooth.print(t);
-   Bluetooth.println(" *C");
 
-   int solSeuilMin, solSeuilMax, airSeuilMin, airSeuilMax, tempSeuilMin, tempSeuilMax;
+  controlHumidity(soilMoisturePercent);
 
-    switch (mode) {
-      case HARICOTS:
-         solSeuilMin = 45;
-         solSeuilMax = 55;
-         airSeuilMin = 50;
-         airSeuilMax = 70;
-         tempSeuilMin = 18;
-         tempSeuilMax = 24;
-         break;
-       case MAIS:
-         solSeuilMin = 40;
-         solSeuilMax = 60;
-         airSeuilMin = 50;
-         airSeuilMax = 70;
-         tempSeuilMin = 18;
-         tempSeuilMax = 24;
-         break;
-       case TOMATES:
-         solSeuilMin = 60;
-         solSeuilMax = 80;
-         airSeuilMin = 60;
-         airSeuilMax = 80;
-         tempSeuilMin = 20;
-         tempSeuilMax = 27;
-         break;  
+  delay(1000);
+}
+//fonction de control de l'ecran
+void displayOptions() {
+  lcd.clear();
+  lcd.print("1. Haricots");
+  lcd.setCursor(0, 1);
+  lcd.print("2. Mais");
+  lcd.setCursor(8, 1);
+  lcd.print("3. Tomates");
+}
+//fonction du debounce
+void debounceButton(int buttonPin, CultureMode newMode, unsigned long &lastDebounceTime) {
+  int reading = digitalRead(buttonPin);
+
+  if (reading == LOW && (millis() - lastDebounceTime) > debounceDelay) {
+    mode = newMode;
+    lcd.clear();
+    lcd.print("MODE ");
+    if (newMode == HARICOTS) {
+      lcd.print("HARICOTS");
+      Serial.println("Mode Haricots sélectionné.");
+    } else if (newMode == MAIS) {
+      lcd.print("MAIS");
+      Serial.println("Mode Mais sélectionné.");
+    } else if (newMode == TOMATES) {
+      lcd.print("TOMATES");
+      Serial.println("Mode Tomates sélectionné.");
     }
-  if (soilMoisturePercent <solSeuilMin )
-{
-    Serial.println("L'humidité du sol est hors du seuil optimal");
-    Bluetooth.println("L'humidité du sol est hors du seuil optimal");
+    delay(1000);  
+    lastDebounceTime = millis();
+  }
+}
 
-    digitalWrite(LED_HUMIDITE_BASSE, HIGH);
-    digitalWrite(LED_HUMIDITE_HAUTE, LOW);
-    digitalWrite(POMPE, LOW);
-  }else {
-     digitalWrite(LED_HUMIDITE_BASSE, LOW);
-    digitalWrite(LED_HUMIDITE_HAUTE, HIGH);
+void debounceResetButton(int buttonPin, unsigned long &lastDebounceTime) {
+  int reading = digitalRead(buttonPin);
+
+  if (reading == LOW && (millis() - lastDebounceTime) > debounceDelay) {
+    resetInterface();
+    lastDebounceTime = millis();
+  }
+}
+//pour la reinitialisation de l'interface
+void resetInterface() {
+  lcd.clear();
+  displayOptions();
+  Serial.println("Interface réinitialisée.");
+}
+//control de l'humidite du sol
+void controlHumidity(int soilMoisturePercent) {
+  int humiditeBasse, humiditeHaute;
+
+  switch (mode) {
+    case HARICOTS:
+      humiditeBasse = HUMIDITE_BASSE_HARICOTS;
+      humiditeHaute = HUMIDITE_HAUTE_HARICOTS;
+      break;
+    case MAIS:
+      humiditeBasse = HUMIDITE_BASSE_MAIS;
+      humiditeHaute = HUMIDITE_HAUTE_MAIS;
+      break;
+    case TOMATES:
+      humiditeBasse = HUMIDITE_BASSE_TOMATES;
+      humiditeHaute = HUMIDITE_HAUTE_TOMATES;
+      break;
+  }
+
+  if (soilMoisturePercent < humiditeBasse) {
     digitalWrite(POMPE, HIGH);
-  }
-  if (h < airSeuilMin || h > airSeuilMax ){
-    Serial.println("L'humidité est hors du seuil optimal.");
-    Bluetooth.println("L'humidité est hors du seuil optimal.");
-    digitalWrite(LED_HUMIDITE_BASSE, HIGH);
-    digitalWrite(LED_HUMIDITE_HAUTE, LOW);
+    Serial.println("Humidité du sol basse. Pompe activée.");
+  } else if (soilMoisturePercent > humiditeHaute) {
     digitalWrite(POMPE, LOW);
+    Serial.println("Humidité du sol élevée. Pompe désactivée.");
   }
-  else {
-     digitalWrite(LED_HUMIDITE_BASSE, LOW);
-    digitalWrite(LED_HUMIDITE_HAUTE, HIGH);
-    digitalWrite(POMPE, HIGH);
+}
+//control de la temperature et l'humidite de l'air
+void checkAmbientConditions(float temperature, float humidity) {
+  int tempBasse, tempHaute, humidAirBasse, humidAirHaute;
+
+  switch (mode) {
+    case HARICOTS:
+      tempBasse = TEMP_BASSE_HARICOTS;
+      tempHaute = TEMP_HAUTE_HARICOTS;
+      humidAirBasse = HUMID_AIR_BASSE_HARICOTS;
+      humidAirHaute = HUMID_AIR_HAUTE_HARICOTS;
+      break;
+    case MAIS:
+      tempBasse = TEMP_BASSE_MAIS;
+      tempHaute = TEMP_HAUTE_MAIS;
+      humidAirBasse = HUMID_AIR_BASSE_MAIS;
+      humidAirHaute = HUMID_AIR_HAUTE_MAIS;
+      break;
+    case TOMATES:
+      tempBasse = TEMP_BASSE_TOMATES;
+      tempHaute = TEMP_HAUTE_TOMATES;
+      humidAirBasse = HUMID_AIR_BASSE_TOMATES;
+      humidAirHaute = HUMID_AIR_HAUTE_TOMATES;
+      break;
   }
-  if (t < tempSeuilMin || t > tempSeuilMax ){
-    Serial.println("La temperature est hors du seuil optimal.");
-    Bluetooth.println("La temperature est hors du seuil optimal.");
-    digitalWrite(LED_HUMIDITE_BASSE, HIGH);
-    digitalWrite(LED_HUMIDITE_HAUTE, LOW);
-    digitalWrite(POMPE, LOW);
+
+  if (temperature < tempBasse || temperature > tempHaute) {
+    Serial.println("Température hors des seuils !");
+    lcd.setCursor(0, 1);
+    lcd.print("Temp hors seuil");
+  } else {
+    Serial.println("Température OK.");
   }
-   else {
-     digitalWrite(LED_HUMIDITE_BASSE, LOW);
-    digitalWrite(LED_HUMIDITE_HAUTE, HIGH);
-    digitalWrite(POMPE, HIGH);
-  delay(6000);
-   }
+
+  if (humidity < humidAirBasse || humidity > humidAirHaute) {
+    Serial.println("Humidité de l'air hors des seuils !");
+    lcd.setCursor(0, 1);
+    lcd.print("Humid air hors seuil");
+  } else {
+    Serial.println("Humidité de l'air OK.");
+  }
 }
 
 
